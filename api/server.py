@@ -1,4 +1,5 @@
 from flask import Flask, request, jsonify, send_file
+from flask_cors import CORS
 import torch
 import numpy as np
 import sys
@@ -12,6 +13,7 @@ import option
 from model import Model
 
 app = Flask(__name__)
+CORS(app)
 
 args = option.parse_args()
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -67,6 +69,52 @@ def snap_video():
             return jsonify({'error': f"video merge code execution failed: {go_stderr.decode()}"}), 500
 
         return send_file("snapped_video.mp4", mimetype='video/mp4', as_attachment=True, download_name="snapped_video.mp4")
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/detect-activity', methods=['POST'])
+def detect_activity():
+    try:
+        if 'video' not in request.files:
+            return jsonify({'error': 'No video file provided'}), 400
+
+        video_file = request.files['video']
+
+        video_filename = video_file.filename
+        video_path = os.path.join(os.getcwd(), video_filename)
+        video_file.save(video_path)
+
+        result = subprocess.run(
+            ['python', '../cctv-recap/cctv_recap.py', video_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+
+        if result.returncode != 0:
+            return jsonify({'error': result.stderr.strip()}), 500
+
+        avi_file = "video_summary.avi"
+        mp4_file = "video_summary.mp4"
+
+        if not os.path.exists(avi_file):
+            return jsonify({'error': f"{avi_file} not found after script execution."}), 500
+
+        ffmpeg_command = [
+            'ffmpeg',
+            '-i', avi_file,
+            '-c:v', 'libx264',
+            '-preset', 'fast',
+            '-crf', '22',
+            mp4_file
+        ]
+
+        ffmpeg_result = subprocess.run(ffmpeg_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if ffmpeg_result.returncode != 0:
+            return jsonify({'error': f"FFmpeg conversion failed: {ffmpeg_result.stderr}"}), 500
+
+        return send_file(mp4_file, mimetype='video/mp4', as_attachment=True, download_name="video_summary.mp4")
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500

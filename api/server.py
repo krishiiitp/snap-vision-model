@@ -7,6 +7,8 @@ import os
 import tempfile
 import subprocess
 import json
+import shutil
+from flask import after_this_request
 
 sys.path.append(os.path.abspath("../"))
 import option
@@ -35,7 +37,16 @@ def snap_video():
         video_path = os.path.join(os.getcwd(), video_filename)
         video_file.save(video_path)
 
-        go_command = ["go", "run", "../video_split.go"]
+        @after_this_request
+        def remove_snapped_video(response):
+            try:
+                if os.path.exists("snapped_video.mp4"):
+                    os.remove("snapped_video.mp4")
+            except Exception as e:
+                print(f"Error deleting snapped_video.mp4: {e}")
+            return response
+
+        go_command = ["go", "run", "../video_split.go", video_path]
         go_process = subprocess.Popen(go_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         go_stdout, go_stderr = go_process.communicate()
 
@@ -58,7 +69,7 @@ def snap_video():
 
             os.remove(npy_path)
             res.append(result)
-            if result < 0.5:
+            if result > 0.1:
                 os.remove(chunk_path)
         
         go_command = ["go", "run", "../video_merge.go"]
@@ -67,6 +78,11 @@ def snap_video():
 
         if go_process.returncode != 0:
             return jsonify({'error': f"video merge code execution failed: {go_stderr.decode()}"}), 500
+        
+        if os.path.exists(chunk_dir):
+            shutil.rmtree(chunk_dir)
+        if os.path.exists(video_path):
+            os.remove(video_path)
 
         return send_file("snapped_video.mp4", mimetype='video/mp4', as_attachment=True, download_name="snapped_video.mp4")
 
@@ -82,6 +98,7 @@ def detect_activity():
         video_file = request.files['video']
 
         video_filename = video_file.filename
+        only_filename = video_filename.split('.')[0]
         video_path = os.path.join(os.getcwd(), video_filename)
         video_file.save(video_path)
 
@@ -95,8 +112,23 @@ def detect_activity():
         if result.returncode != 0:
             return jsonify({'error': result.stderr.strip()}), 500
 
-        avi_file = "video_summary.avi"
-        mp4_file = "video_summary.mp4"
+        avi_file = f"{only_filename}_summary.avi"
+        mp4_file = f"{only_filename}_summary.mp4"
+
+        @after_this_request
+        def cleanup(response):
+            try:
+                if os.path.exists(video_path):
+                    os.remove(video_path)
+                if os.path.exists(avi_file):
+                    os.remove(avi_file)
+                if os.path.exists(mp4_file):
+                    os.remove(mp4_file)
+                if os.path.exists("chunks"):
+                    shutil.rmtree("chunks")
+            except Exception as e:
+                print(f"Cleanup error: {e}")
+            return response
 
         if not os.path.exists(avi_file):
             return jsonify({'error': f"{avi_file} not found after script execution."}), 500
@@ -114,7 +146,7 @@ def detect_activity():
         if ffmpeg_result.returncode != 0:
             return jsonify({'error': f"FFmpeg conversion failed: {ffmpeg_result.stderr}"}), 500
 
-        return send_file(mp4_file, mimetype='video/mp4', as_attachment=True, download_name="video_summary.mp4")
+        return send_file(mp4_file, mimetype='video/mp4', as_attachment=True, download_name=f"{only_filename}_summary.mp4")
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
